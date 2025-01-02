@@ -1,3 +1,6 @@
 .env
 oauth.json
 /__pycache__
+
+playlists.db
+client_secret.json

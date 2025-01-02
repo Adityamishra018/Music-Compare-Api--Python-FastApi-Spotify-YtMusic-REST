@@ -1,9 +1,10 @@
 import os
+import sqlite3
 from pprint import pprint
+from typing import Any, Dict, List
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
-from google_auth_oauthlib.flow import InstalledAppFlow
-import mysql.connector
+# from google_auth_oauthlib.flow import InstalledAppFlow
 
 load_dotenv()
 
@@ -16,55 +17,64 @@ YOUTUBE_API_VERSION = 'v3'
 
 class YTDbContext:
     def __init__(self):
-        self.__clear_playlists = ("TRUNCATE TABLE ytPlaylists")
-        self.__clear_tracks = ("TRUNCATE TABLE ytTracks")
-        self.__add_playlist = ("INSERT INTO ytPlaylists (playlist_id,title,tracks_count,description,artwork)"
-                             "Values (%(id)s,%(title)s,%(trackCount)s,%(description)s,%(artwork)s)")
-        self.__add_tracks = ("INSERT INTO ytTracks (title,duration,artists,album,playlist_id,artwork)"
-                             "Values (%(title)s,%(duration)s,%(artists)s,%(album)s,%(playlist_id)s,%(artwork)s)")
+        self.__clear_playlists = "DELETE FROM ytPlaylists"
+        self.__clear_tracks = "DELETE FROM ytTracks"
+        self.__add_playlist = """
+            INSERT INTO ytPlaylists (playlist_id, title, tracks_count, description, artwork)
+            VALUES (:id, :title, :trackCount, :description, :artwork)
+        """
+        self.__add_tracks = """
+            INSERT INTO ytTracks (title, duration, artists, album, playlist_id, artwork)
+            VALUES (:title, :duration, :artists, :album, :playlist_id, :artwork)
+        """
+        
         try:
-            self.cnx = mysql.connector.connect(user=os.getenv('DBUSER'), password=os.getenv('DBPWD'),
-                                host=os.getenv('DBHOST'),database=os.getenv('DBNAME'))
-            self.cursor = self.cnx.cursor(dictionary=True)
+            self.cnx = sqlite3.connect('.\playlists.db')
+            self.cnx.execute("PRAGMA foreign_keys = ON")
+            self.cnx.row_factory = sqlite3.Row
+            self.cursor = self.cnx.cursor()
         except Exception as e:
-            print(e)
-    def GetPlaylists(self):
-        self.cursor.execute("Select * FROM ytPlaylists")
-        playLists = []
-        for r in self.cursor:
-            playLists.append(r)
-        return playLists
+            print(f"Database connection error: {e}")
+            raise
 
-    def GetPlaylistTracks(self,playListId,**args):
-        query = """Select ytt.title, ytt.duration,ytt.artists,ytt.album,ytt.artwork,ytp.title as playlist_title 
-                FROM ytPlaylists ytp INNER JOIN ytTracks ytt on ytt.playlist_id = ytp.playlist_id
-                WHERE ytp.playlist_id = %s"""
+    def GetPlaylists(self) -> List[Dict[str, Any]]:
+        self.cursor.execute("SELECT * FROM ytPlaylists")
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def GetPlaylistTracks(self, playListId: str, **args) -> List[Dict[str, Any]]:
+        query = """
+            SELECT 
+                ytt.title, 
+                ytt.duration,
+                ytt.artists,
+                ytt.album,
+                ytt.artwork,
+                ytp.title as playlist_title 
+            FROM ytPlaylists ytp 
+            INNER JOIN ytTracks ytt ON ytt.playlist_id = ytp.playlist_id
+            WHERE ytp.playlist_id = ?
+        """
         if 'desc' in args and args['desc']:
-            query = query + "Order by id desc"
-        self.cursor.execute(query,(playListId,))
-        tracks = []
-        for r in self.cursor:
-            tracks.append(r)
-        return tracks
+            query += " ORDER BY id DESC"
+        
+        self.cursor.execute(query, (playListId,))
+        return [dict(row) for row in self.cursor.fetchall()]
     
-    def AddPlaylists(self,playlists):
-        self.cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-        self.cursor.execute(self.__clear_playlists)
-        self.cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-        self.cursor.executemany(self.__add_playlist,playlists)
-        self.cnx.commit()
-        return self.cursor.rowcount
+    def AddPlaylists(self, playlists: List[Dict[str, Any]]) -> int:
+        with self.cnx: # This creates a transaction
+            self.cursor.execute(self.__clear_playlists)
+            self.cursor.executemany(self.__add_playlist, playlists)
+            return self.cursor.rowcount
 
-    def AddTracks(self,tracks):
-        self.cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-        self.cursor.execute(self.__clear_tracks)
-        self.cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-        self.cursor.executemany(self.__add_tracks,tracks)
-        self.cnx.commit()
-        return self.cursor.rowcount
+    def AddTracks(self, tracks: List[Dict[str, Any]]) -> int:
+        with self.cnx: # This creates a transaction
+            self.cursor.execute(self.__clear_tracks)
+            self.cursor.executemany(self.__add_tracks, tracks)
+            return self.cursor.rowcount
 
     def __del__(self):
-        self.cnx.close()
+        if hasattr(self, 'cnx'):
+            self.cnx.close()
 
 class YTContext():
     def __init__(self,userId):

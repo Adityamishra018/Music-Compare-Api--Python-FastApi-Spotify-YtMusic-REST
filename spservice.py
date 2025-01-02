@@ -1,60 +1,68 @@
 import os
 import requests
-import mysql.connector
+import sqlite3
 from pprint import pprint
+from typing import List, Dict, Any
 
 class SPDbContext:
     def __init__(self):
-        self.__clear_playlists = ("TRUNCATE TABLE spPlaylists")
-        self.__clear_tracks = ("TRUNCATE TABLE spTracks")
-        self.__add_playlist = ("INSERT INTO spPlaylists (playlist_id,title,tracks_count,description,artwork)"
-                             "Values (%(id)s,%(title)s,%(trackCount)s,%(description)s,%(artwork)s)")
-        self.__add_tracks = ("INSERT INTO spTracks (title,duration,artists,album,playlist_id,artwork)"
-                             "Values (%(title)s,%(duration)s,%(artists)s,%(album)s,%(playlist_id)s,%(artwork)s)")
+        self.__clear_playlists = "DELETE FROM spPlaylists"
+        self.__clear_tracks = "DELETE FROM spTracks"
+        self.__add_playlist = """
+            INSERT INTO spPlaylists (playlist_id, title, tracks_count, description, artwork)
+            VALUES (:id, :title, :trackCount, :description, :artwork)
+        """
+        self.__add_tracks = """
+            INSERT INTO spTracks (title, duration, artists, album, playlist_id, artwork)
+            VALUES (:title, :duration, :artists, :album, :playlist_id, :artwork)
+        """
         try:
-            self.cnx = mysql.connector.connect(user=os.getenv('DBUSER'), password=os.getenv('DBPWD'),host=os.getenv('DBHOST'),database=os.getenv('DBNAME'))
-            self.cursor = self.cnx.cursor(dictionary=True)
+            self.cnx = sqlite3.connect('.\playlists.db')
+            self.cnx.execute("PRAGMA foreign_keys = ON")
+            self.cnx.row_factory = sqlite3.Row
+            self.cursor = self.cnx.cursor()
         except Exception as e:
-            print(e)
+            print(f"Database connection error: {e}")
+            raise
 
-    def GetPlaylists(self):
-        self.cursor.execute("Select * FROM spPlaylists")
-        playLists = []
-        for r in self.cursor:
-            playLists.append(r)
-        return playLists
+    def GetPlaylists(self) -> List[Dict[str, Any]]:
+        self.cursor.execute("SELECT * FROM spPlaylists")
+        return [dict(row) for row in self.cursor.fetchall()]
 
-    def GetPlaylistTracks(self,playListId,**args):
-        query = """Select spt.title, spt.duration,spt.artists,spt.album,spt.artwork,spp.title as playlist_title 
-                FROM spPlaylists spp INNER JOIN spTracks spt on spp.playlist_id = spt.playlist_id
-                WHERE spp.playlist_id = %s"""
-                
+    def GetPlaylistTracks(self, playListId: str, **args) -> List[Dict[str, Any]]:
+        query = """
+            SELECT 
+                spt.title, 
+                spt.duration,
+                spt.artists,
+                spt.album,
+                spt.artwork,
+                spp.title as playlist_title 
+            FROM spPlaylists spp 
+            INNER JOIN spTracks spt ON spp.playlist_id = spt.playlist_id
+            WHERE spp.playlist_id = ?
+        """
         if 'desc' in args and args['desc']:
-            query = query + "Order by id desc"
-        self.cursor.execute(query,(playListId,))
-        tracks = []
-        for r in self.cursor:
-            tracks.append(r)
-        return tracks
+            query += " ORDER BY id DESC"
+        
+        self.cursor.execute(query, (playListId,))
+        return [dict(row) for row in self.cursor.fetchall()]
+    
+    def AddPlaylists(self, playlists: List[Dict[str, Any]]) -> int:
+        with self.cnx: # This creates a transaction
+            self.cursor.execute(self.__clear_playlists)
+            self.cursor.executemany(self.__add_playlist, playlists)
+            return self.cursor.rowcount
 
-    def AddPlaylists(self,playlists) -> int:
-        self.cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-        self.cursor.execute(self.__clear_playlists)
-        self.cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-        self.cursor.executemany(self.__add_playlist,playlists)
-        self.cnx.commit()
-        return self.cursor.rowcount
-
-    def AddTracks(self,tracks) -> int:
-        self.cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-        self.cursor.execute(self.__clear_tracks)
-        self.cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-        self.cursor.executemany(self.__add_tracks,tracks)
-        self.cnx.commit()
-        return self.cursor.rowcount
+    def AddTracks(self, tracks: List[Dict[str, Any]]) -> int:
+        with self.cnx: # This creates a transaction
+            self.cursor.execute(self.__clear_tracks)
+            self.cursor.executemany(self.__add_tracks, tracks)
+            return self.cursor.rowcount
 
     def __del__(self):
-        self.cnx.close();
+        if hasattr(self, 'cnx'):
+            self.cnx.close()
 
 class SPContext:
     def __init__(self,userId):
@@ -64,7 +72,6 @@ class SPContext:
                 "client_secret" : os.getenv('SECRET')}
         
         resp = requests.post('https://accounts.spotify.com/api/token',headers=token_headers,data=token_data).json()
-        print(resp['access_token'])
         self.headers = {'Authorization' : f"Bearer {resp['access_token']}"}
         self.userId = userId
         self.CheckConnection()
@@ -138,7 +145,6 @@ class SPContext:
     
     def getDbPlaylists(self):
         return self.__db.GetPlaylists()
-
         
 if __name__ == '__main__':
     from dotenv import load_dotenv
