@@ -97,16 +97,19 @@ class SPContext:
             next = resp['next']
             for i in resp['items']:
                 if i['track'] is not None:
-                    tracks.append({
-                        'title' : i['track']['name'],
-                        'album' : i['track']['album']['name'],
-                        'artists' : ', '.join(artist['name'] for artist in i['track']['artists']),
-                        'duration' : i['track']['duration_ms']//1000,
-                        'playlist_id' : playListId,
-                        'artwork' : i['track']['album']['images'][1]['url']
-                    })
+                    try:
+                        tracks.append({
+                            'title' : i['track']['name'],
+                            'album' : i['track']['album']['name'],
+                            'artists' : ', '.join(artist['name'] for artist in i['track']['artists'] if artist['name'] is not None),
+                            'duration' : i['track']['duration_ms']//1000,
+                            'playlist_id' : playListId,
+                            'artwork' : i['track']['album']['images'][1]['url']
+                        })
+                    except Exception as e:
+                        pprint(i['track'])
             if next is None:
-                break;
+                break
         return tracks
     
     def getDbPlaylistTracks(self,playlistId):
@@ -142,4 +145,4 @@ if __name__ == '__main__':
     import os
     load_dotenv()
     app = SPContext(os.getenv('SPUSERID'))
-    app.importPlaylists()
+    pprint(app.importPlaylists())

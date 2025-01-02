@@ -1,7 +1,18 @@
 import os
 from pprint import pprint
-from ytmusicapi import YTMusic
+from dotenv import load_dotenv
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
 import mysql.connector
+
+load_dotenv()
+
+CLIENT_SECRETS_FILE = 'client_secret.json'
+
+DEVELOPER_KEY = os.getenv('DEVELOPER_KEY')
+SCOPES = ['https://www.googleapis.com/auth/youtube']
+YOUTUBE_API_SERVICE_NAME = 'youtube'
+YOUTUBE_API_VERSION = 'v3'
 
 class YTDbContext:
     def __init__(self):
@@ -17,7 +28,6 @@ class YTDbContext:
             self.cursor = self.cnx.cursor(dictionary=True)
         except Exception as e:
             print(e)
-
     def GetPlaylists(self):
         self.cursor.execute("Select * FROM ytPlaylists")
         playLists = []
@@ -54,15 +64,19 @@ class YTDbContext:
         return self.cursor.rowcount
 
     def __del__(self):
-        self.cnx.close();
+        self.cnx.close()
 
-class YTContext(YTMusic):
-    def __init__(self,userId,*args):
-        super().__init__(*args)
+class YTContext():
+    def __init__(self,userId):
+        # flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_FILE, SCOPES)
+        # credentials = flow.run_local_server()
+        # self.__client = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
+        #                         credentials=credentials)
+
+        self.__client = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
+                                 developerKey=DEVELOPER_KEY)
         self.__db = YTDbContext()
         self.__userId = userId
-        self.__song_details = ['duration','title','artists','album','playlist_id']
-        self.__playlist_details = ['id','trackCount','title','description','thumbnails']
         
     def __duration_to_s(self,duration):
         hrs = minutes = seconds = 0
@@ -79,7 +93,7 @@ class YTContext(YTMusic):
     
     def GetPlaylistTracks(self,playlistId):
         return self.__db.GetPlaylistTracks(playlistId)
-
+    
     def GetAllTracks(self):
         playlists = self.__db.GetPlaylists()
         tracks = []
@@ -87,47 +101,71 @@ class YTContext(YTMusic):
             tracks.extend(self.__db.GetPlaylistTracks(p['playlist_id']))
         return tracks
     
+    def getPlaylistItems(self,playListId, nextPageToken = None):
+        return self.__client.playlistItems().list(
+                    part="snippet",
+                    playlistId=playListId,
+                    maxResults = 50,
+                    pageToken = nextPageToken).execute()
+    
     def importPlaylists(self):
-        playlists = self.get_user_playlists(self.__userId,self.get_user(self.__userId)['playlists']['params'])
+        playlists = self.__client.playlists().list(
+            part='snippet,contentDetails',
+            channelId = self.__userId,
+            maxResults=20
+        ).execute()['items']
        
         playlist_details = []
         playlist_tracks = []
 
         for p in playlists:
-            resp = self.get_playlist(playlistId=p['playlistId'])
+            playlist_detail = {
+                'id' : p['id'],
+                'trackCount' : p['contentDetails']['itemCount'],
+                'title' : p['snippet']['title'],
+                'description': p['snippet']['description'] ,
+                'artwork' : p['snippet']['thumbnails']['medium']['url']
+            }
 
-            playlist_detail = {key : resp[key] for key in self.__playlist_details if key in resp}
-            playlist_detail['artwork'] = playlist_detail['thumbnails'][1]['url'];del playlist_detail['thumbnails'];
             playlist_details.append(playlist_detail)
 
-            for t in resp['tracks']:
-                entry = {key : ', '.join(artist['name'] for artist in t[key]) if key == 'artists' else t[key] for key in self.__song_details if key in t}
-                
-                #handle album
-                if isinstance(entry['album'],dict):
-                    entry['album'] = entry['album']['name']
+            resp = self.getPlaylistItems(p['id'])
+            while True:
+                for t in resp['items']:
+                    try:
+                        entry = {
+                            'title' : t['snippet']['title'],
+                            'duration' : 0,
+                            'artwork' : t['snippet']['thumbnails']['default']['url'],
+                            'playlist_id' : p['id']
+                        }
+                    except Exception:
+                        pass
 
-                #handle missing duration
-                if 'duration' not in entry:
-                    entry['duration'] = 0
+                    try:
+                        entry['album'] = t['snippet']['description'].split('\n')[4][:90]
+                    except Exception:
+                        entry['album'] = ''
+                        
+                    try:
+                        entry['artists'] = t['snippet']['description'].split('\n')[2][:140]
+                    except Exception:
+                        entry['artists'] = ''
+                
+                    playlist_tracks.append(entry)
+
+                if resp.get('nextPageToken'):
+                    resp = self.getPlaylistItems(p['id'],resp['nextPageToken'])
                 else:
-                    entry['duration'] = self.__duration_to_s(entry['duration'])
-
-                #handle track artwork
-                entry['artwork'] = t['thumbnails'][-1]['url']
-                
-                #attach playlist_id
-                entry['playlist_id'] = p['playlistId']
-                playlist_tracks.append(entry)
-
+                    break
         return {
             "Youtube music playlists added" : self.__db.AddPlaylists(playlist_details),
             "Youtube music tracks added" : self.__db.AddTracks(playlist_tracks)
         }
-
+    
 if __name__ == '__main__':
     from dotenv import load_dotenv
     import os
     load_dotenv()
-    app = YTContext(os.getenv('YTUSERID'),'oauth.json')
-    app.importPlaylists()
+    app = YTContext(os.getenv('YTUSERID'))
+    pprint(app.importPlaylists())

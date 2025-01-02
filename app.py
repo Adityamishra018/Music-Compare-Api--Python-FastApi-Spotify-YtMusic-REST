@@ -16,7 +16,7 @@ server.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=True,
     allow_headers=["*"])
 
 app = CompareApp()
-ytService = YTContext(os.getenv('YTUSERID'),'oauth.json')
+ytService = YTContext(os.getenv('YTUSERID'))
 spService = SPContext(os.getenv('SPUSERID'))
 
 @server.get('/api/compare', tags=['Compare'])
